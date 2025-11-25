@@ -38,6 +38,21 @@ void print_state(const GameState *s)
                 printf(" [%s]", s->card_pool[cid].name);
         }
     }
+    printf(" | Storm:%d", s->storm_count);
+    printf(" | GY:%d", s->graveyard_count);
+    if (s->graveyard_count > 0)
+    {
+        printf(" [");
+        for (int i = 0; i < s->graveyard_count && i < 6; ++i)
+        {
+            int cid = s->graveyard[i].card_id;
+            if (cid >= 0 && cid < s->card_pool_size)
+                printf("%s%s", i ? ", " : "", s->card_pool[cid].name);
+        }
+        if (s->graveyard_count > 6)
+            printf(", ...");
+        printf("]");
+    }
     printf("\n");
 }
 
@@ -46,9 +61,25 @@ void clone_state(const GameState *src, GameState *dst)
     memcpy(dst, src, sizeof(GameState));
 }
 
+// helper to add an entry to the graveyard
+static void add_to_graveyard(GameState *s, int card_id, int reason)
+{
+    if (s->graveyard_count >= GRAVEYARD_MAX)
+        return;
+    s->graveyard[s->graveyard_count].card_id = card_id;
+    s->graveyard[s->graveyard_count].reason = reason;
+    s->graveyard[s->graveyard_count].turn_entered = s->turn;
+    s->graveyard[s->graveyard_count].storm_at_entry = s->storm_count;
+    s->graveyard_count++;
+}
+
 // Check if state has enough mana to pay a card's cost
 static int can_pay_cost(const GameState *s, const Card *c)
 {
+#ifdef DEBUG_TRACE
+    fprintf(stderr, "can_pay_cost: checking %s (cost %d + R%d B%d G%d)\n", c->name, c->cost_generic, c->cost_color[RED], c->cost_color[BLUE], c->cost_color[GREEN]);
+    fprintf(stderr, "  player_mana R%d B%d G%d\n", s->player_mana[RED], s->player_mana[BLUE], s->player_mana[GREEN]);
+#endif
     // colored requirements
     for (int i = 0; i < COLOR_COUNT; ++i)
     {
@@ -57,26 +88,97 @@ static int can_pay_cost(const GameState *s, const Card *c)
     }
     // generic requirement: sum of remaining mana across colors
     int generic = c->cost_generic;
+    // apply permanent-based reductions (e.g., Ruby Medallion reduces generic cost of red spells)
+    int reduction = 0;
+    for (int p = 0; p < s->battlefield_permanent_count; ++p)
+    {
+        int pid = s->battlefield_permanents[p];
+        if (pid < 0 || pid >= s->card_pool_size)
+            continue;
+        const Card *perm = &s->card_pool[pid];
+        if (perm->type == CARD_ARTIFACT && perm->name && strcmp(perm->name, "Ruby Medallion") == 0)
+        {
+            // reduces generic cost of red spells by 1
+            if (c->cost_color[RED] > 0)
+                reduction += 1;
+        }
+        if (perm->type == CARD_CREATURE && perm->name && strcmp(perm->name, "Ral, Monsoon Mage") == 0)
+        {
+            // reduces generic cost of blue spells by 1
+            if (c->type == CARD_INSTANT || c->type == CARD_SORCERY)
+                reduction += 1;
+        }
+        if (perm->type == CARD_CREATURE && perm->name && strcmp(perm->name, "Stormcatch Mentor") == 0)
+        {
+            // reduces generic cost of blue spells by 1
+            if (c->type == CARD_INSTANT || c->type == CARD_SORCERY)
+                reduction += 1;
+        }
+    }
+    if (reduction > 0)
+    {
+        generic -= reduction;
+        if (generic < 0)
+            generic = 0;
+    }
     int free = 0;
     for (int i = 0; i < COLOR_COUNT; ++i)
         free += s->player_mana[i] - c->cost_color[i];
     return free >= generic;
 }
 
-// Pay the cost (assumes can_pay_cost returned true)
-static void pay_cost(GameState *s, const Card *c)
+// Pay the cost (transactional). Returns 0 on success, -1 on failure.
+static int pay_cost(GameState *s, const Card *c)
 {
+    int tmp[COLOR_COUNT];
+    for (int i = 0; i < COLOR_COUNT; ++i)
+        tmp[i] = s->player_mana[i];
+
     // pay colored requirements first
     for (int i = 0; i < COLOR_COUNT; ++i)
-        s->player_mana[i] -= c->cost_color[i];
+    {
+        tmp[i] -= c->cost_color[i];
+        if (tmp[i] < 0)
+            return -1; // shouldn't happen if can_pay_cost was used
+    }
     // pay generic from any colored mana (greedy by color)
     int gen = c->cost_generic;
+    // apply permanent-based reductions (same as can_pay_cost)
+    int reduction = 0;
+    for (int p = 0; p < s->battlefield_permanent_count; ++p)
+    {
+        int pid = s->battlefield_permanents[p];
+        if (pid < 0 || pid >= s->card_pool_size)
+            continue;
+        const Card *perm = &s->card_pool[pid];
+        if (perm->type == CARD_ARTIFACT && perm->name && strcmp(perm->name, "Ruby Medallion") == 0)
+        {
+            if (c->cost_color[RED] > 0)
+                reduction += 1;
+        }
+    }
+    if (reduction > 0)
+    {
+        gen -= reduction;
+        if (gen < 0)
+            gen = 0;
+    }
     for (int i = 0; i < COLOR_COUNT && gen > 0; ++i)
     {
-        int take = s->player_mana[i] < gen ? s->player_mana[i] : gen;
-        s->player_mana[i] -= take;
+        int take = tmp[i] < gen ? tmp[i] : gen;
+        tmp[i] -= take;
         gen -= take;
     }
+    if (gen > 0)
+        return -1; // not enough generic available
+
+    // commit
+    for (int i = 0; i < COLOR_COUNT; ++i)
+        s->player_mana[i] = tmp[i];
+#ifdef DEBUG_TRACE
+    fprintf(stderr, "pay_cost: paid %s, remaining mana R%d B%d G%d\n", c->name, s->player_mana[RED], s->player_mana[BLUE], s->player_mana[GREEN]);
+#endif
+    return 0;
 }
 
 int play_card(GameState *s, int hand_index)
@@ -91,11 +193,15 @@ int play_card(GameState *s, int hand_index)
     const Card *c = &s->card_pool[cid];
     if (!can_pay_cost(s, c))
         return -1;
-    // pay cost
-    pay_cost(s, c);
+    // pay cost (transactional)
+    if (pay_cost(s, c) != 0)
+        return -1;
+#ifdef DEBUG_TRACE
+    fprintf(stderr, "play_card: played %s on turn %d, storm=%d\n", c->name, s->turn, s->storm_count);
+#endif
     s->hand_used[hand_index] = 1;
     // if land, increase permanent mana/battlefield count
-    if (c->is_land)
+    if (c->type == CARD_LAND)
     {
         // enforce one land per turn
         if (s->land_played_this_turn)
@@ -110,6 +216,22 @@ int play_card(GameState *s, int hand_index)
     }
     if (c->ability)
         c->ability(s, hand_index);
+    // increase storm for non-land spells (lands do NOT count as spells)
+    if (c->type != CARD_LAND)
+    {
+        s->storm_count += 1;
+        // if this is a permanent (artifact/creature/enchantment), place on battlefield
+        if (c->type == CARD_ARTIFACT || c->type == CARD_CREATURE)
+        {
+            if (s->battlefield_permanent_count < MAX_PERMANENTS)
+                s->battlefield_permanents[s->battlefield_permanent_count++] = cid;
+        }
+        else
+        {
+            // after resolution, move the spell to graveyard with reason RESOLVED
+            add_to_graveyard(s, cid, GY_REASON_RESOLVED);
+        }
+    }
     return 0;
 }
 
@@ -140,15 +262,42 @@ static void serialize_state(const GameState *s, char *out, int out_size)
         handmask[pos++] = s->hand_used[i] ? '1' : '0';
     }
     handmask[pos] = 0;
-    // include per-color mana/lands in serialization
-    snprintf(out, out_size, "T%d|MR%d,MB%d,MG%d|PR%d,PB%d,PG%d|O%d|H%s|Lr%d,g%d,b%d|Tt%d,%d,%d|LP%d",
-             s->turn,
-             s->player_mana[RED], s->player_mana[BLUE], s->player_mana[GREEN],
-             s->permanent_mana[RED], s->permanent_mana[BLUE], s->permanent_mana[GREEN],
-             s->opponent_life, handmask,
-             s->battlefield_lands[RED], s->battlefield_lands[GREEN], s->battlefield_lands[BLUE],
-             s->battlefield_lands_tapped[RED], s->battlefield_lands_tapped[BLUE], s->battlefield_lands_tapped[GREEN],
-             s->land_played_this_turn);
+    // include per-color mana/lands and storm/graveyard in serialization
+    int off = snprintf(out, out_size,
+                       "T%d|MR%d,MB%d,MG%d|PR%d,PB%d,PG%d|O%d|H%s|Lr%d,g%d,b%d|Tt%d,%d,%d|LP%d|Storm%d|GY%d",
+                       s->turn,
+                       s->player_mana[RED], s->player_mana[BLUE], s->player_mana[GREEN],
+                       s->permanent_mana[RED], s->permanent_mana[BLUE], s->permanent_mana[GREEN],
+                       s->opponent_life, handmask,
+                       s->battlefield_lands[RED], s->battlefield_lands[GREEN], s->battlefield_lands[BLUE],
+                       s->battlefield_lands_tapped[RED], s->battlefield_lands_tapped[BLUE], s->battlefield_lands_tapped[GREEN],
+                       s->land_played_this_turn,
+                       s->storm_count,
+                       s->graveyard_count);
+    if (off < 0)
+        off = 0;
+    // append graveyard entries (ordered) to the serialization as id:reason:turn
+    for (int i = 0; i < s->graveyard_count && off < out_size - 1; ++i)
+    {
+        int rem = out_size - off;
+        int added = snprintf(out + off, rem, ",%d:%d:%d", s->graveyard[i].card_id, s->graveyard[i].reason, s->graveyard[i].turn_entered);
+        if (added < 0 || added >= rem)
+            break;
+        off += added;
+    }
+    // append battlefield permanents ids
+    for (int i = 0; i < s->battlefield_permanent_count && off < out_size - 1; ++i)
+    {
+        int rem = out_size - off;
+        int added = snprintf(out + off, rem, ",P%d", s->battlefield_permanents[i]);
+        if (added < 0 || added >= rem)
+            break;
+        off += added;
+    }
+
+    // ensure NUL termination
+    if (out_size > 0)
+        out[out_size - 1] = '\0';
 }
 
 int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_size)
@@ -264,11 +413,14 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
             // untap all lands at the beginning of next turn and reset land-play flag
             for (int i = 0; i < COLOR_COUNT; ++i)
             {
+                // untap lands
                 next.battlefield_lands_tapped[i] = 0;
                 next.land_played_this_turn = 0;
-                // replenished mana equals permanent sources (lands) per color
-                next.player_mana[i] = next.permanent_mana[i];
+                // player mana starts empty; lands must be tapped to add mana
+                next.player_mana[i] = 0;
             }
+            // reset storm count at the beginning of a new turn
+            next.storm_count = 0;
             char nseq[MAX_SEQ_LEN];
             snprintf(nseq, MAX_SEQ_LEN, "%sEndTurn -> Turn %d\n", curseq, next.turn);
             if (q_tail < MAX_NODES)

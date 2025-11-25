@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c11 -O2 -Wall
+CFLAGS = -std=c11 -O2
 SRCS = main.c game.c deck.c cards_repo.c
 OBJS = $(SRCS:.c=.o)
 

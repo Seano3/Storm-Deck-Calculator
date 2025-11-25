@@ -6,114 +6,14 @@
 #include "game.h"
 #include "deck.h"
 
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
-#endif
-#include <windows.h>
-#include <process.h> // for _beginthreadex if needed
+#include <pthread.h>
 #include <time.h>
+#include <stdatomic.h>
 
 // forward from cards_repo
 const Card *get_sample_card_pool(int *out_size);
 void create_sample_deck(int *deck_out, int deck_n);
-
-#ifndef CONDITION_VARIABLE
-// Simple fallback for CONDITION_VARIABLE and related APIs for old MinGW headers.
-// This uses an auto-reset event and releases/re-acquires the CS around Wait.
-typedef struct
-{
-    HANDLE event;
-} CONDITION_VARIABLE;
-static void InitializeConditionVariable(CONDITION_VARIABLE *cv)
-{
-    cv->event = CreateEvent(NULL, FALSE, FALSE, NULL); // auto-reset event
-}
-static BOOL SleepConditionVariableCS(CONDITION_VARIABLE *cv, CRITICAL_SECTION *cs, DWORD dwMilliseconds)
-{
-    // Release CS, wait, re-acquire CS
-    LeaveCriticalSection(cs);
-    DWORD r = WaitForSingleObject(cv->event, dwMilliseconds);
-    EnterCriticalSection(cs);
-    return (r == WAIT_OBJECT_0);
-}
-static void WakeConditionVariable(CONDITION_VARIABLE *cv)
-{
-    SetEvent(cv->event);
-}
-#endif
-
-// Shared state for worker threads (used by exhaustive mode)
-enum
-{
-    QUEUE_SIZE = 1024
-};
-typedef struct
-{
-    int ids[MAX_HAND];
-    int n;
-} HandTask;
-typedef struct
-{
-    HandTask *queue;
-    int q_head, q_tail, q_count;
-    CRITICAL_SECTION q_cs;
-    CONDITION_VARIABLE q_not_empty;
-    CONDITION_VARIABLE q_not_full;
-    LONG tasks_done;
-    LONG tasks_total;
-    LONG wins;
-    const Card *pool;
-    int pool_size;
-    int deck_size;
-    int max_hand;
-} Shared;
-
-// Worker thread function for exhaustive mode
-static unsigned __stdcall worker_fn(void *arg)
-{
-    Shared *s = (Shared *)arg;
-    for (;;)
-    {
-        HandTask task;
-        EnterCriticalSection(&s->q_cs);
-        while (s->q_count == 0)
-            SleepConditionVariableCS(&s->q_not_empty, &s->q_cs, INFINITE);
-        task = s->queue[s->q_head];
-        s->q_head = (s->q_head + 1) % QUEUE_SIZE;
-        s->q_count--;
-        WakeConditionVariable(&s->q_not_full);
-        LeaveCriticalSection(&s->q_cs);
-
-        if (task.n == 0)
-            break;
-
-        GameState gs;
-        memset(&gs, 0, sizeof(gs));
-        gs.turn = 1;
-        gs.hand_count = task.n;
-        for (int i = 0; i < task.n; ++i)
-        {
-            gs.hand_ids[i] = task.ids[i];
-            gs.hand_used[i] = 0;
-        }
-        gs.card_pool = s->pool;
-        gs.card_pool_size = s->pool_size;
-
-        char seq_out[1024] = {0};
-        int found = bfs_solve(&gs, 3, seq_out, sizeof(seq_out));
-        if (found)
-        {
-            InterlockedIncrement(&s->wins);
-            LONG w = InterlockedExchangeAdd(&s->wins, 0);
-            printf("[WIN #%ld] Thread %lu hand:", w, GetCurrentThreadId());
-            for (int i = 0; i < task.n; ++i)
-                printf(" %s", s->pool[task.ids[i]].name);
-            printf("\nSequence:\n%s\n", seq_out);
-        }
-        InterlockedIncrement(&s->tasks_done);
-    }
-    return 0;
-}
+const int opponent_life = 9;
 
 int main(int argc, char **argv)
 {
@@ -142,7 +42,7 @@ int main(int argc, char **argv)
     memset(&start, 0, sizeof(start));
     start.turn = 1;
     // per-color mana/permanents are zero-initialized by memset
-    start.opponent_life = 6; // example target
+    start.opponent_life = opponent_life; // example target
     start.player_life = 20;
     start.hand_count = MAX_HAND;
     for (int i = 0; i < MAX_HAND; ++i)
@@ -153,111 +53,187 @@ int main(int argc, char **argv)
     start.card_pool = pool;
     start.card_pool_size = pool_size;
 
-    printf("Drawn hand:\n");
-    for (int i = 0; i < start.hand_count; ++i)
-    {
-        printf("  %d: %s\n", i + 1, pool[start.hand_ids[i]].name);
-    }
+    // printf("Drawn hand:\n");
+    // for (int i = 0; i < start.hand_count; ++i)
+    // {
+    //     printf("  %d: %s\n", i + 1, pool[start.hand_ids[i]].name);
+    // }
 
     // If run with --exhaustive, test all possible hands (order doesn't matter)
-    if (argc > 1 && strcmp(argv[1], "--exhaustive") == 0)
+
+    typedef struct
     {
-        Shared *sh = malloc(sizeof(Shared));
-        sh->queue = malloc(sizeof(HandTask) * QUEUE_SIZE);
-        sh->q_head = sh->q_tail = sh->q_count = 0;
-        InitializeCriticalSection(&sh->q_cs);
-        InitializeConditionVariable(&sh->q_not_empty);
-        InitializeConditionVariable(&sh->q_not_full);
-        sh->tasks_done = 0;
-        sh->tasks_total = 0;
-        sh->wins = 0;
-        sh->pool = pool;
-        sh->pool_size = pool_size;
-        sh->deck_size = DECK_SIZE;
-        sh->max_hand = MAX_HAND;
+        int ids[MAX_HAND];
+        int n;
+    } HandTask;
 
-        int num_workers = 4;
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        if (si.dwNumberOfProcessors > 0)
-            num_workers = si.dwNumberOfProcessors;
+    atomic_int tasks_total = 0;
+    atomic_int wins = 0;
 
-        HANDLE *workers = malloc(sizeof(HANDLE) * num_workers);
-        for (int i = 0; i < num_workers; ++i)
-            workers[i] = (HANDLE)_beginthreadex(NULL, 0, worker_fn, sh, 0, NULL);
-
-        // producer: generate combinations (deck indices) C(DECK_SIZE, MAX_HAND)
-        int n = sh->deck_size;
-        int k = sh->max_hand;
-        if (k > n)
-            k = n;
-        int *comb = malloc(sizeof(int) * k);
-        for (int i = 0; i < k; ++i)
-            comb[i] = i;
-
-        // iterate combinations
-        for (;;)
-        {
-            HandTask t;
-            t.n = k;
-            for (int i = 0; i < k; ++i)
-                t.ids[i] = comb[i];
-            EnterCriticalSection(&sh->q_cs);
-            while (sh->q_count == QUEUE_SIZE)
-                SleepConditionVariableCS(&sh->q_not_full, &sh->q_cs, INFINITE);
-            sh->queue[sh->q_tail] = t;
-            sh->q_tail = (sh->q_tail + 1) % QUEUE_SIZE;
-            sh->q_count++;
-            InterlockedIncrement(&sh->tasks_total);
-            WakeConditionVariable(&sh->q_not_empty);
-            LeaveCriticalSection(&sh->q_cs);
-
-            int i = k - 1;
-            while (i >= 0 && comb[i] == i + n - k)
-                i--;
-            if (i < 0)
-                break;
-            comb[i]++;
-            for (int j = i + 1; j < k; ++j)
-                comb[j] = comb[j - 1] + 1;
-        }
-
-        // send sentinel tasks to stop workers
-        for (int w = 0; w < num_workers; ++w)
-        {
-            HandTask t = {.n = 0};
-            EnterCriticalSection(&sh->q_cs);
-            while (sh->q_count == QUEUE_SIZE)
-                SleepConditionVariableCS(&sh->q_not_full, &sh->q_cs, INFINITE);
-            sh->queue[sh->q_tail] = t;
-            sh->q_tail = (sh->q_tail + 1) % QUEUE_SIZE;
-            sh->q_count++;
-            WakeConditionVariable(&sh->q_not_empty);
-            LeaveCriticalSection(&sh->q_cs);
-        }
-
-        WaitForMultipleObjects(num_workers, workers, TRUE, INFINITE);
-
-        printf("Exhaustive finished: tested %ld hands, %ld wins.\n", InterlockedExchangeAdd(&sh->tasks_total, 0), InterlockedExchangeAdd(&sh->wins, 0));
-
-        free(sh->queue);
-        free(sh);
-        free(workers);
-        free(comb);
-    }
-    else
+    // per-hand thread function: expects a malloc'd HandTask*
+    void *per_hand_fn(void *arg)
     {
-        char seq[1024] = {0};
-        int found = bfs_solve(&start, 3, seq, sizeof(seq));
+        HandTask *task = (HandTask *)arg;
+
+        GameState s;
+        memset(&s, 0, sizeof(s));
+        s.turn = 1;
+        // initialize life totals (same as non-exhaustive run)
+        s.opponent_life = opponent_life;
+        s.player_life = 20;
+        s.land_played_this_turn = 0;
+        s.hand_count = task->n;
+        for (int i = 0; i < task->n; ++i)
+        {
+            s.hand_ids[i] = task->ids[i];
+            s.hand_used[i] = 0;
+        }
+        s.card_pool = pool;
+        s.card_pool_size = pool_size;
+
+        char seq_out[1024] = {0};
+        int found = bfs_solve(&s, 3, seq_out, sizeof(seq_out));
         if (found)
         {
-            printf("Winnable within 3 turns! Sequence:\n%s\n", seq);
+            int w = atomic_fetch_add(&wins, 1) + 1;
+            // build single output string to avoid interleaved prints from multiple threads
+            char outbuf[2048];
+            int off = 0;
+            off += snprintf(outbuf + off, sizeof(outbuf) - off, "[WIN #%d] Thread %lu hand:", w, (unsigned long)pthread_self());
+            for (int i = 0; i < task->n && off < (int)sizeof(outbuf) - 1; ++i)
+            {
+                const char *nm = pool[task->ids[i]].name ? pool[task->ids[i]].name : "(null)";
+                off += snprintf(outbuf + off, sizeof(outbuf) - off, " %s", nm);
+            }
+            off += snprintf(outbuf + off, sizeof(outbuf) - off, "\nSequence:\n");
+            // append seq_out safely
+            if (seq_out[0] != '\0')
+                off += snprintf(outbuf + off, sizeof(outbuf) - off, "%s\n", seq_out);
+            else
+                off += snprintf(outbuf + off, sizeof(outbuf) - off, "(no sequence)\n");
+            // final atomic print
+            printf("%s", outbuf);
+        }
+
+        atomic_fetch_add(&tasks_total, 1);
+        free(task);
+        return NULL;
+    }
+
+    // producer: generate combinations (deck indices) C(DECK_SIZE, MAX_HAND)
+    int n = DECK_SIZE;
+    int k = MAX_HAND;
+    if (k > n)
+        k = n;
+    int *comb = malloc(sizeof(int) * k);
+    for (int i = 0; i < k; ++i)
+        comb[i] = i;
+
+    // dynamic arrays to hold thread handles
+    int cap = 128;
+    pthread_t *threads = malloc(sizeof(pthread_t) * cap);
+    int tcount = 0;
+
+    // deduplication storage: store sorted card-id vectors of unique hands
+    int unique_cap = 0;
+    int unique_count = 0;
+    int *unique_store = NULL; // flattened array of unique hands (unique_cap * k)
+
+    // iterate combinations and spawn a thread per hand
+    for (;;)
+    {
+        HandTask *t = malloc(sizeof(HandTask));
+        t->n = k;
+        for (int i = 0; i < k; ++i)
+            t->ids[i] = deck[comb[i]]; // map deck index -> card id
+
+        // build sorted representation of this hand for deduplication
+        int ids_sorted[MAX_HAND];
+        for (int i = 0; i < k; ++i)
+            ids_sorted[i] = t->ids[i];
+        // simple insertion sort (k <= MAX_HAND small)
+        for (int ii = 1; ii < k; ++ii)
+        {
+            int key = ids_sorted[ii];
+            int jj = ii - 1;
+            while (jj >= 0 && ids_sorted[jj] > key)
+            {
+                ids_sorted[jj + 1] = ids_sorted[jj];
+                jj--;
+            }
+            ids_sorted[jj + 1] = key;
+        }
+
+        // check if this sorted vector already exists
+        int duplicate = 0;
+        for (int u = 0; u < unique_count; ++u)
+        {
+            int *uvec = &unique_store[u * k];
+            int same = 1;
+            for (int x = 0; x < k; ++x)
+            {
+                if (uvec[x] != ids_sorted[x])
+                {
+                    same = 0;
+                    break;
+                }
+            }
+            if (same)
+            {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate)
+        {
+            free(t); // skip duplicate hand
         }
         else
         {
-            printf("Not winnable within 3 turns.\n");
+            // store the unique vector
+            if (unique_count >= unique_cap)
+            {
+                unique_cap = unique_cap ? unique_cap * 2 : 64;
+                unique_store = realloc(unique_store, sizeof(int) * unique_cap * k);
+            }
+            memcpy(&unique_store[unique_count * k], ids_sorted, sizeof(int) * k);
+            unique_count++;
+
+            if (tcount >= cap)
+            {
+                cap *= 2;
+                threads = realloc(threads, sizeof(pthread_t) * cap);
+            }
+            if (pthread_create(&threads[tcount], NULL, per_hand_fn, t) != 0)
+            {
+                perror("pthread_create");
+                free(t);
+            }
+            else
+            {
+                tcount++;
+            }
         }
+
+        // next combination
+        int i = k - 1;
+        while (i >= 0 && comb[i] == i + n - k)
+            i--;
+        if (i < 0)
+            break;
+        comb[i]++;
+        for (int j = i + 1; j < k; ++j)
+            comb[j] = comb[j - 1] + 1;
     }
+
+    // join all threads
+    for (int i = 0; i < tcount; ++i)
+        pthread_join(threads[i], NULL);
+
+    printf("Exhaustive finished: tested %d hands, %d wins.\n", atomic_load(&tasks_total), atomic_load(&wins));
+
+    free(threads);
+    free(comb);
 
     return 0;
 }

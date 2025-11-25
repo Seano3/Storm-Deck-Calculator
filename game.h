@@ -6,6 +6,26 @@
 
 #define MAX_HAND 7
 #define MAX_SEQ_LEN 256
+// maximum graveyard size tracked in GameState
+#define GRAVEYARD_MAX 64
+// max permanents (artifacts/creatures/enchantments) tracked on battlefield
+#define MAX_PERMANENTS 64
+// graveyard entry reasons
+enum GraveReason
+{
+    GY_REASON_RESOLVED = 0,   // played and resolved
+    GY_REASON_DISCARDED = 1,  // discarded from hand
+    GY_REASON_SACRIFICED = 2, // sacrificed as cost/effect
+    GY_REASON_OTHER = 3
+};
+
+typedef struct GraveEntry
+{
+    int card_id;        // index into card_pool
+    int reason;         // GraveReason
+    int turn_entered;   // turn number when it entered GY
+    int storm_at_entry; // storm count when it entered
+} GraveEntry;
 
 typedef struct GameState
 {
@@ -23,6 +43,12 @@ typedef struct GameState
     int land_played_this_turn;                 // 0/1 flag: whether a land was played this turn
     const Card *card_pool;                     // pointer to array of card templates
     int card_pool_size;
+    int storm_count; // number of spells played this turn
+    int graveyard_count;
+    GraveEntry graveyard[GRAVEYARD_MAX];
+    // battlefield permanents (card ids)
+    int battlefield_permanent_count;
+    int battlefield_permanents[MAX_PERMANENTS];
 } GameState;
 
 // utility

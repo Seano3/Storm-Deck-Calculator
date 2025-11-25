@@ -1,0 +1,41 @@
+[WIN #1] Thread 134996089943744 hand: Grapeshot Grapeshot Grapeshot Grapeshot Grapeshot Grapeshot Mountain
+Sequence:
+Play: Turn1 Mountain
+Tap R: Turn1 -> +1 R
+Play: Turn1 Grapeshot
+EndTurn -> Turn 2
+Play: Turn2 Grapeshot
+Tap R: Turn2 -> +1 R
+Play: Turn2 Grapeshot
+
+[WIN #2] Thread 134996277753536 hand: Grapeshot Grapeshot Grapeshot Grapeshot Grapeshot Island Mountain
+Sequence:
+Play: Turn1 Mountain
+Tap R: Turn1 -> +1 R
+Play: Turn1 Grapeshot
+EndTurn -> Turn 2
+Play: Turn2 Grapeshot
+Tap R: Turn2 -> +1 R
+Play: Turn2 Grapeshot
+
+[WIN #3] Thread 134996569949888 hand: Grapeshot Grapeshot Forest Grapeshot Grapeshot Grapeshot Mountain
+Sequence:
+Play: Turn1 Mountain
+Tap R: Turn1 -> +1 R
+Play: Turn1 Grapeshot
+EndTurn -> Turn 2
+Play: Turn2 Grapeshot
+Tap R: Turn2 -> +1 R
+Play: Turn2 Grapeshot
+
+[WIN #4] Thread 134996535944896 hand: Grapeshot Grapeshot Forest Grapeshot Grapeshot Island Mountain
+Sequence:
+Play: Turn1 Mountain
+Tap R: Turn1 -> +1 R
+Play: Turn1 Grapeshot
+EndTurn -> Turn 2
+Play: Turn2 Grapeshot
+Tap R: Turn2 -> +1 R
+Play: Turn2 Grapeshot
+
+Exhaustive finished: tested 7 hands, 4 wins.
