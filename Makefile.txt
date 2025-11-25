@@ -1,0 +1,12 @@
+CC = gcc
+CFLAGS = -std=c11 -O2 -Wall
+SRCS = main.c game.c deck.c cards_repo.c
+OBJS = $(SRCS:.c=.o)
+
+all: storm
+
+storm: $(SRCS)
+	$(CC) $(CFLAGS) -o storm $(SRCS)
+
+clean:
+	rm -f storm $(OBJS)
