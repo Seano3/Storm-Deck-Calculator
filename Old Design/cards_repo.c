@@ -20,9 +20,10 @@ static void ritual_ability(GameState *s, int hand_index)
 static void impulse_ability(GameState *s, int hand_index)
 {
     (void)hand_index;
-    // Use draw_card to draw up to two cards from the library.
-    draw_card(s);
-    draw_card(s);
+    // Request two draws. The solver will resolve pending_draws as branching
+    // events so we can compute exact probabilities rather than performing a
+    // random draw here.
+    s->pending_draws += 2;
 }
 
 // Build a small sample card pool: index 0 = Mountain (red land), 1 = Island (blue land),

@@ -1,4 +1,5 @@
 #include "game.h"
+#include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -209,11 +210,17 @@ static int pay_cost(GameState *s, const Card *c)
 // no empty slots (i.e. no slot marked hand_used==1), the drawn card is moved to
 // the graveyard. Returns 0 on success, -1 if the library is empty or other
 // failure.
-int draw_card(GameState *s)
+int draw_card(GameState *s, int idx)
 {
     if (!s || !s->library || s->library_size <= 0)
         return -1;
-    int idx = rand() % s->library_size;
+    if (idx == -1)
+    {
+        // legacy random draw
+        idx = rand() % s->library_size;
+    }
+    if (idx < 0 || idx >= s->library_size)
+        return -1;
     int cid = s->library[idx];
     // remove from library by shifting
     for (int i = idx; i + 1 < s->library_size; ++i)
@@ -598,7 +605,7 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
             // draw a card at the beginning of each turn except the first
             if (next.turn > 1)
             {
-                draw_card(&next);
+                draw_card(&next, -1);
             }
             char nseq[MAX_SEQ_LEN];
             int off2 = snprintf(nseq, MAX_SEQ_LEN, "%sEndTurn -> Turn %d\n", curseq, next.turn);
@@ -661,4 +668,239 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
     free(q_seq);
     free(visited);
     return 0;
+}
+
+// Helper: add or accumulate a state in the visited list.
+struct ProbEntry
+{
+    char ser[512];
+    GameState state;
+    double prob;
+    int processed;
+};
+
+static int find_ser(struct ProbEntry *arr, int cnt, const char *ser)
+{
+    for (int i = 0; i < cnt; ++i)
+        if (strcmp(arr[i].ser, ser) == 0)
+            return i;
+    return -1;
+}
+
+static void enqueue_state(struct ProbEntry **arrp, int *cntp, int *cap, const GameState *s, const char *ser, double prob)
+{
+    int idx = find_ser(*arrp, *cntp, ser);
+    if (idx >= 0)
+    {
+        (*arrp)[idx].prob += prob;
+        return;
+    }
+    if (*cntp >= *cap)
+    {
+        int ncap = (*cap) ? (*cap) * 2 : 1024;
+        *arrp = realloc(*arrp, sizeof(struct ProbEntry) * ncap);
+        *cap = ncap;
+    }
+    struct ProbEntry *e = &(*arrp)[(*cntp)++];
+    strncpy(e->ser, ser, sizeof(e->ser) - 1);
+    e->ser[sizeof(e->ser) - 1] = '\0';
+    clone_state(s, &e->state);
+    e->prob = prob;
+    e->processed = 0;
+}
+
+// Recursively branch pending draws from a base state. Each draw splits
+// probability by the current library size. When draws_left == 0, the final
+// state is enqueued into arr with accumulated prob.
+static void branch_draws_and_enqueue(struct ProbEntry **arrp, int *cntp, int *cap, const GameState *base, int draws_left, double prob)
+{
+    if (draws_left <= 0)
+    {
+        char ser[512];
+        serialize_state(base, ser, sizeof(ser));
+        enqueue_state(arrp, cntp, cap, base, ser, prob);
+        return;
+    }
+    int L = base->library_size;
+    if (L <= 0)
+    {
+        // no cards to draw: nothing happens
+        char ser[512];
+        serialize_state(base, ser, sizeof(ser));
+        enqueue_state(arrp, cntp, cap, base, ser, prob);
+        return;
+    }
+    for (int i = 0; i < L; ++i)
+    {
+        GameState tmp;
+        clone_state(base, &tmp);
+        int cid = draw_card(&tmp, i);
+        (void)cid;
+        // after the draw, continue branching remaining draws
+        branch_draws_and_enqueue(arrp, cntp, cap, &tmp, draws_left - 1, prob / (double)L);
+        // free tmp.library allocated by clone_state
+        if (tmp.library)
+            free(tmp.library);
+    }
+}
+
+double solve_hand_probability(const GameState *start, int max_turns, atomic_int *progress_counter)
+{
+    struct ProbEntry *nodes = NULL;
+    int ncnt = 0;
+    int ncap = 0;
+
+    // seed with the start state having probability 1.0
+    char ser0[512];
+    serialize_state(start, ser0, sizeof(ser0));
+    enqueue_state(&nodes, &ncnt, &ncap, start, ser0, 1.0);
+
+    double win_prob = 0.0;
+
+    // process until no unprocessed entries remain
+    while (1)
+    {
+        int cur_idx = -1;
+        for (int i = 0; i < ncnt; ++i)
+            if (!nodes[i].processed)
+            {
+                cur_idx = i;
+                break;
+            }
+        if (cur_idx < 0)
+            break;
+
+        struct ProbEntry node = nodes[cur_idx];
+        nodes[cur_idx].processed = 1;
+        GameState cur = node.state; // copy local
+        double prob = node.prob;
+
+        if (progress_counter)
+            atomic_fetch_add(progress_counter, 1);
+
+        if (prob <= 0.0)
+        {
+            continue;
+        }
+
+        if (check_win(&cur))
+        {
+            win_prob += prob;
+            continue;
+        }
+        if (cur.turn > max_turns)
+        {
+            continue;
+        }
+
+        // 1) Try playing every playable card in hand
+        for (int i = 0; i < cur.hand_count; ++i)
+        {
+            if (cur.hand_used[i])
+                continue;
+            int cid = cur.hand_ids[i];
+            const Card *c = &cur.card_pool[cid];
+            if (!can_pay_cost(&cur, c))
+                continue;
+
+            GameState next;
+            clone_state(&cur, &next);
+            int ok = play_card(&next, i);
+            if (ok == 0)
+            {
+                // if abilities requested draws, branch them deterministically
+                if (next.pending_draws > 0)
+                {
+                    branch_draws_and_enqueue(&nodes, &ncnt, &ncap, &next, next.pending_draws, prob);
+                }
+                else
+                {
+                    char ser[512];
+                    serialize_state(&next, ser, sizeof(ser));
+                    enqueue_state(&nodes, &ncnt, &ncap, &next, ser, prob);
+                }
+            }
+            if (next.library)
+                free(next.library);
+        }
+
+        // 1b) Try tapping an untapped land for each color
+        for (int color = 0; color < COLOR_COUNT; ++color)
+        {
+            if (cur.battlefield_lands[color] - cur.battlefield_lands_tapped[color] <= 0)
+                continue;
+            GameState next;
+            clone_state(&cur, &next);
+            int ok = tap_land_color(&next, color);
+            if (ok == 0)
+            {
+                char ser[512];
+                serialize_state(&next, ser, sizeof(ser));
+                enqueue_state(&nodes, &ncnt, &ncap, &next, ser, prob);
+            }
+            if (next.library)
+                free(next.library);
+        }
+
+        // 2) End turn: advance to next turn and set mana = permanent_mana
+        if (cur.turn < max_turns)
+        {
+            GameState next;
+            clone_state(&cur, &next);
+            next.turn = cur.turn + 1;
+            for (int i = 0; i < COLOR_COUNT; ++i)
+            {
+                next.battlefield_lands_tapped[i] = 0;
+                next.land_played_this_turn = 0;
+                next.player_mana[i] = 0;
+            }
+            next.storm_count = 0;
+            // draw a card at the beginning of each turn except the first
+            if (next.turn > 1 && next.library_size > 0)
+            {
+                int L = next.library_size;
+                for (int j = 0; j < L; ++j)
+                {
+                    GameState nd2;
+                    clone_state(&next, &nd2);
+                    draw_card(&nd2, j);
+                    if (nd2.pending_draws > 0)
+                    {
+                        branch_draws_and_enqueue(&nodes, &ncnt, &ncap, &nd2, nd2.pending_draws, prob / (double)L);
+                    }
+                    else
+                    {
+                        char ser[512];
+                        serialize_state(&nd2, ser, sizeof(ser));
+                        enqueue_state(&nodes, &ncnt, &ncap, &nd2, ser, prob / (double)L);
+                    }
+                    if (nd2.library)
+                        free(nd2.library);
+                }
+            }
+            else
+            {
+                // no draw
+                char ser[512];
+                serialize_state(&next, ser, sizeof(ser));
+                enqueue_state(&nodes, &ncnt, &ncap, &next, ser, prob);
+            }
+            if (next.library)
+                free(next.library);
+        }
+
+        /* Do not free cur.library here: nodes array still owns the stored
+         * state's library pointer. Final cleanup will free all stored
+         * libraries once. */
+    }
+
+    // cleanup stored states
+    for (int i = 0; i < ncnt; ++i)
+    {
+        if (nodes[i].state.library)
+            free(nodes[i].state.library);
+    }
+    free(nodes);
+
+    return win_prob;
 }

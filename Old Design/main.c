@@ -144,79 +144,50 @@ int main(int argc, char **argv)
         }
         free(tmp);
 
-        char seq_out[1024] = {0};
-        int found = bfs_solve(&s, 3, seq_out, sizeof(seq_out));
-        if (found)
+        // Compute exact win probability for this starting hand (branching over
+        // all possible draws). This may be expensive but is exact up to
+        // max_turns.
+        double p = solve_hand_probability(&s, 3);
+        // build single output string to avoid interleaved prints from multiple threads
+        char outbuf[2048];
+        int off = 0;
         {
-            int w = atomic_fetch_add(&wins, 1) + 1;
-            // build single output string to avoid interleaved prints from multiple threads
-            char outbuf[2048];
-            int off = 0;
-            {
-                int rem = (int)sizeof(outbuf) - off;
-                int r = snprintf(outbuf + off, rem, "[WIN #%d] Thread %lu hand:", w, (unsigned long)pthread_self());
-                if (r < 0)
-                    r = 0;
-                if (r >= rem)
-                    off = (int)sizeof(outbuf) - 1;
-                else
-                    off += r;
-            }
-            for (int i = 0; i < task->n && off < (int)sizeof(outbuf) - 1; ++i)
-            {
-                const char *nm = pool[task->ids[i]].name ? pool[task->ids[i]].name : "(null)";
-                {
-                    int rem = (int)sizeof(outbuf) - off;
-                    int r = snprintf(outbuf + off, rem, " %s", nm);
-                    if (r < 0)
-                        r = 0;
-                    if (r >= rem)
-                    {
-                        off = (int)sizeof(outbuf) - 1;
-                        break;
-                    }
-                    else
-                        off += r;
-                }
-            }
-
-            {
-                int rem = (int)sizeof(outbuf) - off;
-                int r = snprintf(outbuf + off, rem, "\nSequence:\n");
-                if (r < 0)
-                    r = 0;
-                if (r >= rem)
-                    off = (int)sizeof(outbuf) - 1;
-                else
-                    off += r;
-            }
-            // append seq_out safely
-            if (seq_out[0] != '\0')
-            {
-                int rem = (int)sizeof(outbuf) - off;
-                int r = snprintf(outbuf + off, rem, "%s\n", seq_out);
-                if (r < 0)
-                    r = 0;
-                if (r >= rem)
-                    off = (int)sizeof(outbuf) - 1;
-                else
-                    off += r;
-            }
+            int rem = (int)sizeof(outbuf) - off;
+            int r = snprintf(outbuf + off, rem, "Thread %lu hand: prob=%.6f", (unsigned long)pthread_self(), p);
+            if (r < 0)
+                r = 0;
+            if (r >= rem)
+                off = (int)sizeof(outbuf) - 1;
             else
+                off += r;
+        }
+        for (int i = 0; i < task->n && off < (int)sizeof(outbuf) - 1; ++i)
+        {
+            const char *nm = pool[task->ids[i]].name ? pool[task->ids[i]].name : "(null)";
             {
                 int rem = (int)sizeof(outbuf) - off;
-                int r = snprintf(outbuf + off, rem, "(no sequence)\n");
+                int r = snprintf(outbuf + off, rem, " %s", nm);
                 if (r < 0)
                     r = 0;
                 if (r >= rem)
+                {
                     off = (int)sizeof(outbuf) - 1;
+                    break;
+                }
                 else
                     off += r;
             }
-            // final atomic print
-            printf("%s", outbuf);
         }
+        {
+            int rem = (int)sizeof(outbuf) - off;
+            int r = snprintf(outbuf + off, rem, "\n");
+            if (r > 0 && r < rem)
+                off += r;
+        }
+        printf("%s", outbuf);
 
+        if (p > 0.0)
+            atomic_fetch_add(&wins, 1);
         atomic_fetch_add(&tasks_total, 1);
         if (s.library)
             free(s.library);

@@ -2,6 +2,7 @@
 #define GAME_H
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include "card.h"
 
 #define MAX_HAND 7
@@ -60,6 +61,9 @@ typedef struct GameState
     // transient opponent life change deltas recorded during the last action
     int last_oplife_deltas[8];
     int last_oplife_count;
+    // number of draws requested by abilities that should be resolved by the
+    // solver as branching events (allows exact probabilistic solving).
+    int pending_draws;
 } GameState;
 
 // utility
@@ -80,7 +84,10 @@ int check_win(const GameState *s);
 // -1 on failure (empty library or no slot). The draw is performed by removing
 // a random card from the library using rand(). If the hand is full, the drawn
 // card is placed into the graveyard.
-int draw_card(GameState *s);
+// Draw a card from the GameState library into the hand. If idx >= 0, draw
+// the card at that library index; if idx == -1, choose a random card (legacy
+// behavior). Returns the card id drawn on success, -1 on failure.
+int draw_card(GameState *s, int idx);
 
 // Change opponent life by delta (can be negative). Records the delta in the
 // transient last_oplife_deltas array so BFS can log each change as it happens.
@@ -89,5 +96,14 @@ void change_opponent_life(GameState *s, int delta);
 // BFS solver: searches for shortest sequence of plays (within max_turns) that lead to win.
 // If found, fills seq_out with a human-readable description and returns 1. Otherwise 0.
 int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_size);
+
+// Probabilistic solver: returns the exact probability (0..1) that the given
+// start state will lead to a win within max_turns, accounting for all possible
+// library draws (branching). This merges identical states by serialization to
+// keep the search tractable.
+// progress_counter: if non-NULL, the solver will atomically increment this
+// counter as it processes nodes; this allows the caller to display per-hand
+// progress. The counter should be unique per worker/thread.
+double solve_hand_probability(const GameState *start, int max_turns, atomic_int *progress_counter);
 
 #endif // GAME_H
