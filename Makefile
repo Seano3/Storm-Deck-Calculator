@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c11 -O2
+CFLAGS = -std=c11 -O2 -DUSE_DISK_BFS -lsqlite3
 SRCS = main.c game.c deck.c cards_repo.c
 OBJS = $(SRCS:.c=.o)
 

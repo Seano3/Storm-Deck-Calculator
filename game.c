@@ -58,7 +58,31 @@ void print_state(const GameState *s)
 
 void clone_state(const GameState *src, GameState *dst)
 {
-    memcpy(dst, src, sizeof(GameState));
+    // Deep-copy GameState: copy structure and duplicate library if present.
+    // We avoid a raw memcpy because GameState now contains a dynamic library pointer.
+    *dst = *src;
+    // clear transient draw log in the destination; draws should be recorded only
+    // for actions that happen after cloning (so bfs_solve can report them).
+    dst->last_drawn_count = 0;
+    for (int _i = 0; _i < 8; ++_i)
+        dst->last_drawn_ids[_i] = -1;
+    dst->last_oplife_count = 0;
+    for (int _i = 0; _i < 8; ++_i)
+        dst->last_oplife_deltas[_i] = 0;
+
+    if (src->library && src->library_size > 0)
+    {
+        dst->library = malloc(sizeof(int) * src->library_size);
+        if (dst->library)
+            memcpy(dst->library, src->library, sizeof(int) * src->library_size);
+        else
+            dst->library_size = 0;
+    }
+    else
+    {
+        dst->library = NULL;
+        dst->library_size = 0;
+    }
 }
 
 // helper to add an entry to the graveyard
@@ -181,6 +205,50 @@ static int pay_cost(GameState *s, const Card *c)
     return 0;
 }
 
+// Draw a random card from the library into the player's hand. If the hand has
+// no empty slots (i.e. no slot marked hand_used==1), the drawn card is moved to
+// the graveyard. Returns 0 on success, -1 if the library is empty or other
+// failure.
+int draw_card(GameState *s)
+{
+    if (!s || !s->library || s->library_size <= 0)
+        return -1;
+    int idx = rand() % s->library_size;
+    int cid = s->library[idx];
+    // remove from library by shifting
+    for (int i = idx; i + 1 < s->library_size; ++i)
+        s->library[i] = s->library[i + 1];
+    s->library_size -= 1;
+
+    // find first empty hand slot (hand_used == 1) to place the drawn card
+    for (int h = 0; h < s->hand_count; ++h)
+    {
+        if (s->hand_used[h] == 1)
+        {
+            s->hand_ids[h] = cid;
+            s->hand_used[h] = 0;
+            // record transient draw
+            if (s->last_drawn_count < 8)
+                s->last_drawn_ids[s->last_drawn_count++] = cid;
+            return cid;
+        }
+    }
+    // no empty slot — move to graveyard
+    add_to_graveyard(s, cid, GY_REASON_OTHER);
+    if (s->last_drawn_count < 8)
+        s->last_drawn_ids[s->last_drawn_count++] = cid;
+    return cid;
+}
+
+void change_opponent_life(GameState *s, int delta)
+{
+    if (!s)
+        return;
+    s->opponent_life += delta;
+    if (s->last_oplife_count < 8)
+        s->last_oplife_deltas[s->last_oplife_count++] = delta;
+}
+
 int play_card(GameState *s, int hand_index)
 {
     if (hand_index < 0 || hand_index >= s->hand_count)
@@ -276,6 +344,8 @@ static void serialize_state(const GameState *s, char *out, int out_size)
                        s->graveyard_count);
     if (off < 0)
         off = 0;
+    if (off >= out_size)
+        off = out_size - 1;
     // append graveyard entries (ordered) to the serialization as id:reason:turn
     for (int i = 0; i < s->graveyard_count && off < out_size - 1; ++i)
     {
@@ -290,6 +360,24 @@ static void serialize_state(const GameState *s, char *out, int out_size)
     {
         int rem = out_size - off;
         int added = snprintf(out + off, rem, ",P%d", s->battlefield_permanents[i]);
+        if (added < 0 || added >= rem)
+            break;
+        off += added;
+    }
+
+    // append library information (size and remaining ids) so state identity
+    // includes library contents which affect future draws
+    if (off < out_size - 1)
+    {
+        int rem = out_size - off;
+        int added = snprintf(out + off, rem, ",LIB%d", s->library_size);
+        if (added > 0 && added < rem)
+            off += added;
+    }
+    for (int i = 0; i < s->library_size && off < out_size - 1; ++i)
+    {
+        int rem = out_size - off;
+        int added = snprintf(out + off, rem, ",%d", s->library[i]);
         if (added < 0 || added >= rem)
             break;
         off += added;
@@ -329,6 +417,12 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
         {
             strncpy(seq_out, curseq, seq_out_size - 1);
             seq_out[seq_out_size - 1] = '\0';
+            // free any dynamically allocated library arrays inside queued states
+            for (int i = 0; i < q_tail; ++i)
+            {
+                if (q_states[i].library)
+                    free(q_states[i].library);
+            }
             free(q_states);
             free(q_seq);
             free(visited);
@@ -370,7 +464,47 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
             {
                 // append to seq
                 char nseq[MAX_SEQ_LEN];
-                snprintf(nseq, MAX_SEQ_LEN, "%sPlay: Turn%d %s\n", curseq, cur.turn, c->name);
+                int off2 = snprintf(nseq, MAX_SEQ_LEN, "%sPlay: Turn%d %s\n", curseq, cur.turn, c->name);
+                if (off2 < 0)
+                    off2 = 0;
+                if (off2 >= MAX_SEQ_LEN)
+                    off2 = MAX_SEQ_LEN - 1;
+                // append any draws that occurred as part of this play
+                for (int d = 0; d < next.last_drawn_count && off2 < MAX_SEQ_LEN - 1; ++d)
+                {
+                    int dcid = next.last_drawn_ids[d];
+                    const char *dname = (dcid >= 0 && dcid < next.card_pool_size && next.card_pool[dcid].name) ? next.card_pool[dcid].name : "(null)";
+                    int remaining = MAX_SEQ_LEN - off2;
+                    int added = snprintf(nseq + off2, remaining, "Draw: Turn%d %s\n", cur.turn, dname);
+                    if (added < 0)
+                        break;
+                    if (added >= remaining)
+                    {
+                        off2 = MAX_SEQ_LEN - 1;
+                        break;
+                    }
+                    off2 += added;
+                }
+                // append any opponent life changes (recorded as deltas) caused by this action
+                {
+                    int life_now = cur.opponent_life;
+                    for (int o = 0; o < next.last_oplife_count && off2 < MAX_SEQ_LEN - 1; ++o)
+                    {
+                        int delta = next.last_oplife_deltas[o];
+                        int newlife = life_now + delta;
+                        int remaining = MAX_SEQ_LEN - off2;
+                        int added = snprintf(nseq + off2, remaining, "OppLife: %d -> %d\n", life_now, newlife);
+                        if (added < 0)
+                            break;
+                        if (added >= remaining)
+                        {
+                            off2 = MAX_SEQ_LEN - 1;
+                            break;
+                        }
+                        off2 += added;
+                        life_now = newlife;
+                    }
+                }
                 // push next
                 if (q_tail < MAX_NODES)
                 {
@@ -393,7 +527,47 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
             if (ok == 0)
             {
                 char nseq[MAX_SEQ_LEN];
-                snprintf(nseq, MAX_SEQ_LEN, "%sTap %s: Turn%d -> +1 %s\n", curseq, color_name(color), cur.turn, color_name(color));
+                int off2 = snprintf(nseq, MAX_SEQ_LEN, "%sTap %s: Turn%d -> +1 %s\n", curseq, color_name(color), cur.turn, color_name(color));
+                if (off2 < 0)
+                    off2 = 0;
+                if (off2 >= MAX_SEQ_LEN)
+                    off2 = MAX_SEQ_LEN - 1;
+                // append any draws produced by triggered abilities (unlikely on tap)
+                for (int d = 0; d < next.last_drawn_count && off2 < MAX_SEQ_LEN - 1; ++d)
+                {
+                    int dcid = next.last_drawn_ids[d];
+                    const char *dname = (dcid >= 0 && dcid < next.card_pool_size && next.card_pool[dcid].name) ? next.card_pool[dcid].name : "(null)";
+                    int remaining = MAX_SEQ_LEN - off2;
+                    int added = snprintf(nseq + off2, remaining, "Draw: Turn%d %s\n", cur.turn, dname);
+                    if (added < 0)
+                        break;
+                    if (added >= remaining)
+                    {
+                        off2 = MAX_SEQ_LEN - 1;
+                        break;
+                    }
+                    off2 += added;
+                }
+                // append any opponent life changes (recorded as deltas) caused by this action
+                {
+                    int life_now = cur.opponent_life;
+                    for (int o = 0; o < next.last_oplife_count && off2 < MAX_SEQ_LEN - 1; ++o)
+                    {
+                        int delta = next.last_oplife_deltas[o];
+                        int newlife = life_now + delta;
+                        int remaining = MAX_SEQ_LEN - off2;
+                        int added = snprintf(nseq + off2, remaining, "OppLife: %d -> %d\n", life_now, newlife);
+                        if (added < 0)
+                            break;
+                        if (added >= remaining)
+                        {
+                            off2 = MAX_SEQ_LEN - 1;
+                            break;
+                        }
+                        off2 += added;
+                        life_now = newlife;
+                    }
+                }
                 if (q_tail < MAX_NODES)
                 {
                     clone_state(&next, &q_states[q_tail]);
@@ -421,8 +595,53 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
             }
             // reset storm count at the beginning of a new turn
             next.storm_count = 0;
+            // draw a card at the beginning of each turn except the first
+            if (next.turn > 1)
+            {
+                draw_card(&next);
+            }
             char nseq[MAX_SEQ_LEN];
-            snprintf(nseq, MAX_SEQ_LEN, "%sEndTurn -> Turn %d\n", curseq, next.turn);
+            int off2 = snprintf(nseq, MAX_SEQ_LEN, "%sEndTurn -> Turn %d\n", curseq, next.turn);
+            if (off2 < 0)
+                off2 = 0;
+            if (off2 >= MAX_SEQ_LEN)
+                off2 = MAX_SEQ_LEN - 1;
+            // include any draws recorded (start-of-turn and triggered draws)
+            for (int d = 0; d < next.last_drawn_count && off2 < MAX_SEQ_LEN - 1; ++d)
+            {
+                int dcid = next.last_drawn_ids[d];
+                const char *dname = (dcid >= 0 && dcid < next.card_pool_size && next.card_pool[dcid].name) ? next.card_pool[dcid].name : "(null)";
+                int remaining = MAX_SEQ_LEN - off2;
+                int added = snprintf(nseq + off2, remaining, "Draw: Turn%d %s\n", next.turn, dname);
+                if (added < 0)
+                    break;
+                if (added >= remaining)
+                {
+                    off2 = MAX_SEQ_LEN - 1;
+                    break;
+                }
+                off2 += added;
+            }
+            // append any opponent life changes (recorded as deltas) caused at end of turn
+            {
+                int life_now = cur.opponent_life;
+                for (int o = 0; o < next.last_oplife_count && off2 < MAX_SEQ_LEN - 1; ++o)
+                {
+                    int delta = next.last_oplife_deltas[o];
+                    int newlife = life_now + delta;
+                    int remaining = MAX_SEQ_LEN - off2;
+                    int added = snprintf(nseq + off2, remaining, "OppLife: %d -> %d\n", life_now, newlife);
+                    if (added < 0)
+                        break;
+                    if (added >= remaining)
+                    {
+                        off2 = MAX_SEQ_LEN - 1;
+                        break;
+                    }
+                    off2 += added;
+                    life_now = newlife;
+                }
+            }
             if (q_tail < MAX_NODES)
             {
                 clone_state(&next, &q_states[q_tail]);
@@ -432,7 +651,12 @@ int bfs_solve(const GameState *start, int max_turns, char *seq_out, int seq_out_
             }
         }
     }
-
+    // free any dynamically allocated library arrays inside queued states
+    for (int i = 0; i < q_tail; ++i)
+    {
+        if (q_states[i].library)
+            free(q_states[i].library);
+    }
     free(q_states);
     free(q_seq);
     free(visited);

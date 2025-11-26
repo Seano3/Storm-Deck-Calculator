@@ -13,13 +13,13 @@
 // forward from cards_repo
 const Card *get_sample_card_pool(int *out_size);
 void create_sample_deck(int *deck_out, int deck_n);
-const int opponent_life = 9;
+const int opponent_life = 10;
 
 int main(int argc, char **argv)
 {
     enum
     {
-        DECK_SIZE = 9
+        DECK_SIZE = 39
     };
     int deck[DECK_SIZE];
 
@@ -52,6 +52,20 @@ int main(int argc, char **argv)
     }
     start.card_pool = pool;
     start.card_pool_size = pool_size;
+
+    // initialize library for the start state: remaining deck after drawing opening hand
+    if (DECK_SIZE - drawn > 0)
+    {
+        start.library_size = DECK_SIZE - drawn;
+        start.library = malloc(sizeof(int) * start.library_size);
+        for (int i = 0; i < start.library_size; ++i)
+            start.library[i] = deck[drawn + i];
+    }
+    else
+    {
+        start.library = NULL;
+        start.library_size = 0;
+    }
 
     // printf("Drawn hand:\n");
     // for (int i = 0; i < start.hand_count; ++i)
@@ -91,6 +105,45 @@ int main(int argc, char **argv)
         s.card_pool = pool;
         s.card_pool_size = pool_size;
 
+        // build a per-hand library by copying the shuffled deck and removing
+        // one occurrence of each card present in the starting hand (task->ids)
+        int *tmp = malloc(sizeof(int) * DECK_SIZE);
+        int tmp_n = 0;
+        for (int i = 0; i < DECK_SIZE; ++i)
+            tmp[tmp_n++] = deck[i];
+        // remove one occurrence per hand card id
+        for (int h = 0; h < task->n; ++h)
+        {
+            int want = task->ids[h];
+            int found = 0;
+            for (int j = 0; j < tmp_n; ++j)
+            {
+                if (tmp[j] == want)
+                {
+                    // remove by shifting
+                    for (int k2 = j; k2 + 1 < tmp_n; ++k2)
+                        tmp[k2] = tmp[k2 + 1];
+                    tmp_n--;
+                    found = 1;
+                    break;
+                }
+            }
+            (void)found; // it's okay if not found (shouldn't happen)
+        }
+        if (tmp_n > 0)
+        {
+            s.library = malloc(sizeof(int) * tmp_n);
+            s.library_size = tmp_n;
+            for (int i = 0; i < tmp_n; ++i)
+                s.library[i] = tmp[i];
+        }
+        else
+        {
+            s.library = NULL;
+            s.library_size = 0;
+        }
+        free(tmp);
+
         char seq_out[1024] = {0};
         int found = bfs_solve(&s, 3, seq_out, sizeof(seq_out));
         if (found)
@@ -99,23 +152,74 @@ int main(int argc, char **argv)
             // build single output string to avoid interleaved prints from multiple threads
             char outbuf[2048];
             int off = 0;
-            off += snprintf(outbuf + off, sizeof(outbuf) - off, "[WIN #%d] Thread %lu hand:", w, (unsigned long)pthread_self());
+            {
+                int rem = (int)sizeof(outbuf) - off;
+                int r = snprintf(outbuf + off, rem, "[WIN #%d] Thread %lu hand:", w, (unsigned long)pthread_self());
+                if (r < 0)
+                    r = 0;
+                if (r >= rem)
+                    off = (int)sizeof(outbuf) - 1;
+                else
+                    off += r;
+            }
             for (int i = 0; i < task->n && off < (int)sizeof(outbuf) - 1; ++i)
             {
                 const char *nm = pool[task->ids[i]].name ? pool[task->ids[i]].name : "(null)";
-                off += snprintf(outbuf + off, sizeof(outbuf) - off, " %s", nm);
+                {
+                    int rem = (int)sizeof(outbuf) - off;
+                    int r = snprintf(outbuf + off, rem, " %s", nm);
+                    if (r < 0)
+                        r = 0;
+                    if (r >= rem)
+                    {
+                        off = (int)sizeof(outbuf) - 1;
+                        break;
+                    }
+                    else
+                        off += r;
+                }
             }
-            off += snprintf(outbuf + off, sizeof(outbuf) - off, "\nSequence:\n");
+
+            {
+                int rem = (int)sizeof(outbuf) - off;
+                int r = snprintf(outbuf + off, rem, "\nSequence:\n");
+                if (r < 0)
+                    r = 0;
+                if (r >= rem)
+                    off = (int)sizeof(outbuf) - 1;
+                else
+                    off += r;
+            }
             // append seq_out safely
             if (seq_out[0] != '\0')
-                off += snprintf(outbuf + off, sizeof(outbuf) - off, "%s\n", seq_out);
+            {
+                int rem = (int)sizeof(outbuf) - off;
+                int r = snprintf(outbuf + off, rem, "%s\n", seq_out);
+                if (r < 0)
+                    r = 0;
+                if (r >= rem)
+                    off = (int)sizeof(outbuf) - 1;
+                else
+                    off += r;
+            }
             else
-                off += snprintf(outbuf + off, sizeof(outbuf) - off, "(no sequence)\n");
+            {
+                int rem = (int)sizeof(outbuf) - off;
+                int r = snprintf(outbuf + off, rem, "(no sequence)\n");
+                if (r < 0)
+                    r = 0;
+                if (r >= rem)
+                    off = (int)sizeof(outbuf) - 1;
+                else
+                    off += r;
+            }
             // final atomic print
             printf("%s", outbuf);
         }
 
         atomic_fetch_add(&tasks_total, 1);
+        if (s.library)
+            free(s.library);
         free(task);
         return NULL;
     }

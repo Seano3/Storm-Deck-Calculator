@@ -7,12 +7,27 @@ static void grapeshot_ability(GameState *s, int hand_index)
 {
     // deal 1 to opponent
     (void)hand_index;
-    s->opponent_life -= 3 * (s->storm_count + 1);
+    // use change_opponent_life so we log the damage event
+    change_opponent_life(s, -1 * (s->storm_count + 1));
+}
+
+static void ritual_ability(GameState *s, int hand_index)
+{
+    (void)hand_index;
+    s->player_mana[RED] += 3;
+}
+
+static void impulse_ability(GameState *s, int hand_index)
+{
+    (void)hand_index;
+    // Use draw_card to draw up to two cards from the library.
+    draw_card(s);
+    draw_card(s);
 }
 
 // Build a small sample card pool: index 0 = Mountain (red land), 1 = Island (blue land),
 // 2 = Forest (green land), 3 = Grapeshot (red spell), 4 = Ruby Medallion (artifact)
-static Card sample_pool[5];
+static Card sample_pool[7];
 
 void init_sample_cards()
 {
@@ -68,6 +83,26 @@ void init_sample_cards()
     sample_pool[4].cost_color[GREEN] = 0;
     sample_pool[4].land_color = -1;
     sample_pool[4].ability = NULL;
+
+    // Pyretic Ritual (red spell) : 2R -> add RRR
+    sample_pool[5].name = "Pyretic Ritual";
+    sample_pool[5].type = CARD_SORCERY;
+    sample_pool[5].cost_generic = 1;
+    sample_pool[5].cost_color[RED] = 1;
+    sample_pool[5].cost_color[BLUE] = 0;
+    sample_pool[5].cost_color[GREEN] = 0;
+    sample_pool[5].land_color = -1;
+    sample_pool[5].ability = ritual_ability;
+
+    // Impulse
+    sample_pool[6].name = "Impulse";
+    sample_pool[6].type = CARD_SORCERY;
+    sample_pool[6].cost_generic = 1;
+    sample_pool[6].cost_color[RED] = 1;
+    sample_pool[6].cost_color[BLUE] = 0;
+    sample_pool[6].cost_color[GREEN] = 0;
+    sample_pool[6].land_color = -1;
+    sample_pool[6].ability = impulse_ability;
 }
 
 const Card *get_sample_card_pool(int *out_size)
@@ -75,24 +110,39 @@ const Card *get_sample_card_pool(int *out_size)
     if (sample_pool[0].name == NULL)
         init_sample_cards();
     if (out_size)
-        *out_size = 5;
+        *out_size = 7;
     return sample_pool;
 }
 
 // Create a sample deck: fill with bolts (index 3) and put a few lands of each color
 void create_sample_deck(int *deck_out, int deck_n)
 {
-    // default to Lightning Bolt (index 3)
     for (int i = 0; i < deck_n; ++i)
-        deck_out[i] = 3;
-    // place one of each land at the start if space
-    if (deck_n >= 1)
-        deck_out[0] = 0; // Mountain
-    if (deck_n >= 2)
-        deck_out[1] = 0; // Mountain
-    if (deck_n >= 3)
-        deck_out[2] = 2; // Forest
-    // place a Ruby Medallion if space
-    if (deck_n >= 4)
-        deck_out[3] = 4; // Ruby Medallion
+        deck_out[i] = 1; // Fill with Islands by default
+    int indexInLibrary = 0;
+    for (int i = indexInLibrary; i < indexInLibrary + 1 && i < deck_n; ++i)
+    {
+        deck_out[i] = 3; // Grapeshot
+    }
+    indexInLibrary += 1;
+    for (int i = indexInLibrary; i < indexInLibrary + 4 && i < deck_n; ++i)
+    {
+        deck_out[i] = 4; // Ruby Medallion
+    }
+    indexInLibrary += 4;
+    for (int i = indexInLibrary; i < indexInLibrary + 18 && i < deck_n; ++i)
+    {
+        deck_out[i] = 0; // Mountain
+    }
+    indexInLibrary += 18;
+    for (int i = indexInLibrary; i < indexInLibrary + 8 && i < deck_n; ++i)
+    {
+        deck_out[i] = 5; // Ritual
+    }
+    indexInLibrary += 8;
+    for (int i = indexInLibrary; i < indexInLibrary + 8 && i < deck_n; ++i)
+    {
+        deck_out[i] = 6; // Impulse
+    }
+    indexInLibrary += 8;
 }
