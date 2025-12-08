@@ -4,7 +4,7 @@
 CC ?= gcc
 CFLAGS ?= -std=c11 -O2 -Wall -Wextra -g
 LDFLAGS ?=
-TARGET ?= storm-deck
+TARGET ?= storm
 
 SRCS := $(wildcard *.c)
 OBJS := $(SRCS:.c=.o)
