@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include "vars.h"
 #include "cards.h"
-#include "main.c"
 
 /* portable strdup replacement */
 static char *xstrdup(const char *s)
@@ -15,6 +14,24 @@ static char *xstrdup(const char *s)
     if (p)
         memcpy(p, s, n);
     return p;
+}
+
+static Card drawCard(int deck[])
+{
+    /* Find the first non-empty slot (non -1), remove it from the deck
+       so it can't be drawn again, and return the corresponding card. */
+    Card empty = {0};
+    for (int i = 0; i < DECK_SIZE; ++i)
+    {
+        int idx = deck[i];
+        if (idx >= 0)
+        {
+            deck[i] = -1; /* mark as drawn */
+            return library[idx];
+        }
+    }
+
+    return empty;
 }
 
 static void drawCardTohand(GameState *gs)
@@ -33,7 +50,24 @@ static void impulse_draw(GameState *gs, int idx)
 {
     for (int i = 0; i < DECK_SIZE; ++i)
     {
-        gs->exile[i] = drawCard(gs->deck);
+        if (gs->exile[i].name == NULL)
+        {
+            gs->exile[i] = drawCard(gs->deck);
+            return;
+        }
+    }
+    (void)idx;
+}
+
+static void addToBattlefield(GameState *gs, Card card)
+{
+    for (int i = 0; i < DECK_SIZE; ++i)
+    {
+        if (gs->battlefield[i].name == NULL)
+        {
+            gs->battlefield[i] = card;
+            return;
+        }
     }
 }
 
@@ -44,8 +78,8 @@ Card library[LIBRARY_SIZE];
    mutate the game state. Keep bodies small here; you can expand later. */
 static void effect_artists_talent(GameState *gs, int idx)
 {
-    (void)gs;
-    (void)idx; /* no-op for now */
+    Card target = gs->hand[idx];
+    addToBattlefield(gs, target);
 }
 static void effect_desperate_ritual(GameState *gs, int idx)
 {
@@ -86,8 +120,8 @@ static void effect_pyretic_ritual(GameState *gs, int idx)
 }
 static void effect_ral(GameState *gs, int idx)
 {
-    (void)gs;
-    (void)idx;
+    Card target = gs->hand[idx];
+    addToBattlefield(gs, target);
 }
 static void effect_reckless_impulse(GameState *gs, int idx)
 {
@@ -97,18 +131,21 @@ static void effect_reckless_impulse(GameState *gs, int idx)
 }
 static void effect_ruby_medallion(GameState *gs, int idx)
 {
-    (void)gs;
-    (void)idx;
+    Card target = gs->hand[idx];
+    addToBattlefield(gs, target);
 }
 static void effect_stormcatch_mentor(GameState *gs, int idx)
 {
-    (void)gs;
-    (void)idx;
+    Card target = gs->hand[idx];
+    addToBattlefield(gs, target);
 }
 static void effect_stormscale_scion(GameState *gs, int idx)
 {
-    (void)gs;
-    (void)idx;
+    Card target = gs->hand[idx];
+    for (int i = -1; i < gs->storm_count; ++i)
+    {
+        addToBattlefield(gs, target);
+    }
 }
 static void effect_valakut_awakening(GameState *gs, int idx)
 {
@@ -128,8 +165,8 @@ static void effect_wrenn_resolve(GameState *gs, int idx)
 }
 static void effect_blood_moon(GameState *gs, int idx)
 {
-    (void)gs;
-    (void)idx;
+    Card target = gs->hand[idx];
+    addToBattlefield(gs, target);
 }
 static void effect_brotherhoods_end(GameState *gs, int idx)
 {
