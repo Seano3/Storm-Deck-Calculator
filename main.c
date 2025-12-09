@@ -141,6 +141,8 @@ int main(void)
     init_deck(gs.deck, DECK_SIZE, gs.sideboard, SIDEBOARD_SIZE);
     gs.player_life = STARTING_LIFE;
     gs.opponent_life = OPPONENT_LIFE;
+    gs.storm_count = 0;
+    gs.turn = 0;
 
     srand((unsigned)time(NULL));
     shuffle_deck(gs.deck, DECK_SIZE);

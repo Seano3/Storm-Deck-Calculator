@@ -66,6 +66,7 @@ struct GameState
     int turn;
     Card battlefield[DECK_SIZE];
     Card graveyard[DECK_SIZE];
+    int storm_count;
 };
 
 #endif /* STORM_DECK_VARS_H */

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "vars.h"
 #include "cards.h"
+#include "main.c"
 
 /* portable strdup replacement */
 static char *xstrdup(const char *s)
@@ -14,6 +15,18 @@ static char *xstrdup(const char *s)
     if (p)
         memcpy(p, s, n);
     return p;
+}
+
+static void drawCardTohand(GameState *gs)
+{
+    for (int i = 0; i < HAND_SIZE; ++i)
+    {
+        if (gs->hand[i].name == NULL)
+        {
+            gs->hand[i] = drawCard(gs->deck);
+            return;
+        }
+    }
 }
 
 /* Define the library (templates) */
@@ -35,12 +48,13 @@ static void effect_desperate_ritual(GameState *gs, int idx)
 }
 static void effect_flame_of_anor(GameState *gs, int idx)
 {
-    (void)gs;
+    drawCardTohand(gs);
+    drawCardTohand(gs);
     (void)idx;
 }
 static void effect_grapeshot(GameState *gs, int idx)
 {
-    (void)gs;
+    gs->opponent_life -= 1 + (gs->storm_count);
     (void)idx;
 }
 static void effect_manamorphose(GameState *gs, int idx)
@@ -69,7 +83,8 @@ static void effect_ral(GameState *gs, int idx)
 }
 static void effect_reckless_impulse(GameState *gs, int idx)
 {
-    (void)gs;
+    drawCardTohand(gs);
+    drawCardTohand(gs);
     (void)idx;
 }
 static void effect_ruby_medallion(GameState *gs, int idx)
@@ -89,7 +104,7 @@ static void effect_stormscale_scion(GameState *gs, int idx)
 }
 static void effect_valakut_awakening(GameState *gs, int idx)
 {
-    (void)gs;
+    drawCardTohand(gs);
     (void)idx;
 }
 static void effect_wish(GameState *gs, int idx)
@@ -99,7 +114,8 @@ static void effect_wish(GameState *gs, int idx)
 }
 static void effect_wrenn_resolve(GameState *gs, int idx)
 {
-    (void)gs;
+    drawCardTohand(gs);
+    drawCardTohand(gs);
     (void)idx;
 }
 static void effect_blood_moon(GameState *gs, int idx)
@@ -119,12 +135,17 @@ static void effect_collective_resistance(GameState *gs, int idx)
 }
 static void effect_escape_to_the_wilds(GameState *gs, int idx)
 {
-    (void)gs;
+    drawCardTohand(gs);
+    drawCardTohand(gs);
+    drawCardTohand(gs);
+    drawCardTohand(gs);
+    drawCardTohand(gs);
     (void)idx;
 }
 static void effect_galvanic_relay(GameState *gs, int idx)
 {
-    (void)gs;
+    for (int i = 0; i < gs->storm_count; ++i)
+        drawCardTohand(gs);
     (void)idx;
 }
 static void effect_into_the_flood_maw(GameState *gs, int idx)
