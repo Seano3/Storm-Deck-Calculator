@@ -29,6 +29,14 @@ static void drawCardTohand(GameState *gs)
     }
 }
 
+static void impulse_draw(GameState *gs, int idx)
+{
+    for (int i = 0; i < DECK_SIZE; ++i)
+    {
+        gs->exile[i] = drawCard(gs->deck);
+    }
+}
+
 /* Define the library (templates) */
 Card library[LIBRARY_SIZE];
 
@@ -48,7 +56,7 @@ static void effect_desperate_ritual(GameState *gs, int idx)
 }
 static void effect_flame_of_anor(GameState *gs, int idx)
 {
-    drawCardTohand(gs);
+    gs->hand[idx] = drawCard(gs->deck);
     drawCardTohand(gs);
     (void)idx;
 }
@@ -83,8 +91,8 @@ static void effect_ral(GameState *gs, int idx)
 }
 static void effect_reckless_impulse(GameState *gs, int idx)
 {
-    drawCardTohand(gs);
-    drawCardTohand(gs);
+    impulse_draw(gs, idx);
+    impulse_draw(gs, idx);
     (void)idx;
 }
 static void effect_ruby_medallion(GameState *gs, int idx)
@@ -104,7 +112,7 @@ static void effect_stormscale_scion(GameState *gs, int idx)
 }
 static void effect_valakut_awakening(GameState *gs, int idx)
 {
-    drawCardTohand(gs);
+    gs->hand[idx] = drawCard(gs->deck);
     (void)idx;
 }
 static void effect_wish(GameState *gs, int idx)
@@ -114,8 +122,8 @@ static void effect_wish(GameState *gs, int idx)
 }
 static void effect_wrenn_resolve(GameState *gs, int idx)
 {
-    drawCardTohand(gs);
-    drawCardTohand(gs);
+    impulse_draw(gs, idx);
+    impulse_draw(gs, idx);
     (void)idx;
 }
 static void effect_blood_moon(GameState *gs, int idx)
@@ -135,17 +143,17 @@ static void effect_collective_resistance(GameState *gs, int idx)
 }
 static void effect_escape_to_the_wilds(GameState *gs, int idx)
 {
-    drawCardTohand(gs);
-    drawCardTohand(gs);
-    drawCardTohand(gs);
-    drawCardTohand(gs);
-    drawCardTohand(gs);
+    impulse_draw(gs, idx);
+    impulse_draw(gs, idx);
+    impulse_draw(gs, idx);
+    impulse_draw(gs, idx);
+    impulse_draw(gs, idx);
     (void)idx;
 }
 static void effect_galvanic_relay(GameState *gs, int idx)
 {
     for (int i = 0; i < gs->storm_count; ++i)
-        drawCardTohand(gs);
+        impulse_draw(gs, idx);
     (void)idx;
 }
 static void effect_into_the_flood_maw(GameState *gs, int idx)
