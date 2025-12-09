@@ -1,3 +1,9 @@
+// Prevent double-inclusion which was causing redefinition errors when
+// `vars.h` is pulled in multiple times (main.c includes it and then
+// includes headers that also include it).
+#ifndef STORM_DECK_VARS_H
+#define STORM_DECK_VARS_H
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,3 +30,42 @@
 // Initial Numbers
 #define STARTING_LIFE 20
 #define OPPONENT_LIFE 20
+
+/* forward declare GameState so function-pointer types in Card may refer to
+   it before the full GameState definition below */
+typedef struct GameState GameState;
+
+typedef struct
+{
+    const char *name;
+    int type;
+    int cost_generic;
+    // red, blue, green
+    int cost_color[3];
+    /* typed card-effect callback that receives a pointer to the game
+       state and an integer (for example, card instance id). Use this
+       for real effect implementations. */
+    void (*affect)(GameState *, int);
+    int power;
+    int toughness;
+    void *effect;
+    void (*activated_abilities)(GameState *, int);
+    int tapped;
+} Card;
+
+/* Define GameState (uses Card defined above). We declared the typedef
+   earlier so code can use 'GameState' as an alias for 'struct GameState'. */
+struct GameState
+{
+    int player_life;
+    int opponent_life;
+    int player_mana[4]; // red, blue, green, colorless
+    int deck[DECK_SIZE];
+    int sideboard[SIDEBOARD_SIZE];
+    Card hand[HAND_SIZE];
+    int turn;
+    Card battlefield[DECK_SIZE];
+    Card graveyard[DECK_SIZE];
+};
+
+#endif /* STORM_DECK_VARS_H */

@@ -137,21 +137,19 @@ static Card drawCard(int deck[])
 
 int main(void)
 {
-    int deck[DECK_SIZE];
-    int sideboard[SIDEBOARD_SIZE];
-    init_deck(deck, DECK_SIZE, sideboard, SIDEBOARD_SIZE);
-    Card hand[HAND_SIZE];
-    int health = STARTING_LIFE;
-    int opponent_health = OPPONENT_LIFE;
+    GameState gs;
+    init_deck(gs.deck, DECK_SIZE, gs.sideboard, SIDEBOARD_SIZE);
+    gs.player_life = STARTING_LIFE;
+    gs.opponent_life = OPPONENT_LIFE;
 
     srand((unsigned)time(NULL));
-    shuffle_deck(deck, DECK_SIZE);
+    shuffle_deck(gs.deck, DECK_SIZE);
 
     printf("Drawn %d cards:\n", HAND_SIZE);
-    for (int i = 0; i < HAND_SIZE; ++i)
+    for (int i = 0; i < HAND_SIZE + 1; ++i)
     {
-        hand[i] = drawCard(deck);
-        printf("%2d:%s\n", i + 1, hand[i].name);
+        gs.hand[i] = drawCard(gs.deck);
+        printf("%2d:%s\n", i + 1, gs.hand[i].name);
     }
 
     return 0;
