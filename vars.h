@@ -13,9 +13,14 @@
 #define ARTIFACT 3
 #define ENCHANTMENT 4
 #define LAND 5
+#define MDFC 6
 
 // Colors
 #define RED 0
 #define BLUE 1
 #define GREEN 2
 #define COLORLESS 3
+
+// Initial Numbers
+#define STARTING_LIFE 20
+#define OPPONENT_LIFE 20

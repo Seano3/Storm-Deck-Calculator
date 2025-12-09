@@ -6,8 +6,8 @@
 
 static void init_deck(int deck[], int n, int sideboard[], int m)
 {
-    // Initialize sample pool (populates sample_pool[] defined in cards.h)
-    init_sample_cards();
+    // Initialize card library (populates library[] defined in cards.h)
+    init_cards();
 
     // Open decklist file and parse lines of the form:
     // <count> <card name>
@@ -27,7 +27,7 @@ static void init_deck(int deck[], int n, int sideboard[], int m)
     int side_pos = 0;
     char line[512];
     int in_sideboard = 0;
-    size_t pool_size = sizeof(sample_pool) / sizeof(sample_pool[0]);
+    size_t pool_size = sizeof(library) / sizeof(library[0]);
 
     while (fgets(line, sizeof(line), f))
     {
@@ -70,11 +70,11 @@ static void init_deck(int deck[], int n, int sideboard[], int m)
         // p now points at card name
         for (long k = 0; k < cnt; ++k)
         {
-            // find card in sample_pool by name (string compare)
+            // find card in library by name (string compare)
             int found = -1;
             for (size_t i = 0; i < pool_size; ++i)
             {
-                const char *name = sample_pool[i].name;
+                const char *name = library[i].name;
                 if (!name)
                     continue;
                 if (strcmp(name, p) == 0)
@@ -117,11 +117,32 @@ static void shuffle_deck(int deck[], int n)
     }
 }
 
+static Card drawCard(int deck[])
+{
+    /* Find the first non-empty slot (non -1), remove it from the deck
+       so it can't be drawn again, and return the corresponding card. */
+    Card empty = {0};
+    for (int i = 0; i < DECK_SIZE; ++i)
+    {
+        int idx = deck[i];
+        if (idx >= 0)
+        {
+            deck[i] = -1; /* mark as drawn */
+            return library[idx];
+        }
+    }
+    /* deck empty -> return zeroed sentinel */
+    return empty;
+}
+
 int main(void)
 {
     int deck[DECK_SIZE];
     int sideboard[SIDEBOARD_SIZE];
     init_deck(deck, DECK_SIZE, sideboard, SIDEBOARD_SIZE);
+    Card hand[HAND_SIZE];
+    int health = STARTING_LIFE;
+    int opponent_health = OPPONENT_LIFE;
 
     srand((unsigned)time(NULL));
     shuffle_deck(deck, DECK_SIZE);
@@ -129,7 +150,8 @@ int main(void)
     printf("Drawn %d cards:\n", HAND_SIZE);
     for (int i = 0; i < HAND_SIZE; ++i)
     {
-        printf("%2d:%s\n", i + 1, sample_pool[deck[i]].name);
+        hand[i] = drawCard(deck);
+        printf("%2d:%s\n", i + 1, hand[i].name);
     }
 
     return 0;
